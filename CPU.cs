@@ -1,3 +1,5 @@
+using System.Collections;
+
 namespace CHIP8Emulator;
 
 public class CPU
@@ -12,6 +14,8 @@ public class CPU
     public Dictionary<byte, byte> VARIABLE_REGISTERS;
     public Dictionary<byte, bool> PRESSED_KEYS;
     private Screen _screen;
+    private bool _superChipQuirk;
+    private Random random;
 
     private byte[] _font = new byte[]
     {
@@ -33,8 +37,10 @@ public class CPU
         0xF0, 0x80, 0xF0, 0x80, 0x80  // F
     };
 
-    public CPU(byte[] rom, Screen screen)
+    public CPU(byte[] rom, Screen screen, bool superChip = false)
     {
+        _superChipQuirk = superChip;
+        random = new();
         RAM = new Byte[4096];
         STACK = new();
         DELAY_TIMER = 0;
@@ -97,7 +103,7 @@ public class CPU
         Console.WriteLine(BitConverter.ToString(RAM));
     }
 
-    public void Loop()
+    public void Tick()
     {
         while (true)
         {
@@ -109,47 +115,259 @@ public class CPU
             var secondNibble = instrByteOne & 0x0F; //X
             var thirdNibble = instrByteTwo >> 4; //Y
             var fourthNibble = instrByteTwo & 0x0F; //N
-            var nibbleNNN = secondNibble << 8 & thirdNibble << 4 & fourthNibble; //NNN
+            var nibbleNNN = 0x000 | (secondNibble << 8) | (thirdNibble << 4) | fourthNibble;
 
+            //Decode and Execute
             switch (firstNibble)
             {
                 case 0x0:
+                    switch (fourthNibble)
+                    {
+                        case 0x0: //00E0 - Clear screen
+                            _screen.ClearScreen();
+                            break;
+                        case 0xE: //00EE - Subroutine return
+                            PC = STACK.Pop();
+                            break;
+                    }
                     break;
-                case 0x1:
+                case 0x1: //1NNN - Jump
+                    PC = (ushort)nibbleNNN;
                     break;
-                case 0x2:
+                case 0x2: //2NNN - Subroutine call
+                    STACK.Push(PC);
+                    PC = (ushort)nibbleNNN;
                     break;
-                case 0x3:
+                case 0x3: //3XNN - Skip if equal immediate
+                    if (VARIABLE_REGISTERS[(byte)secondNibble] == instrByteTwo)
+                    {
+                        PC += 2;
+                    }
                     break;
-                case 0x4:
+                case 0x4: //4XNN - Skip if not equal immediate
+                    if (VARIABLE_REGISTERS[(byte)secondNibble] != instrByteTwo)
+                    {
+                        PC += 2;
+                    }
                     break;
-                case 0x5:
+                case 0x5: //5XY0 - Skip if equal registers
+                    if (VARIABLE_REGISTERS[(byte)secondNibble] == VARIABLE_REGISTERS[(byte)thirdNibble])
+                    {
+                        PC += 2;
+                    }
                     break;
-                case 0x6:
+                case 0x6: //6XNN - Set immediate
+                    VARIABLE_REGISTERS[(byte)secondNibble] = instrByteTwo;
                     break;
-                case 0x7:
+                case 0x7: //7XNN - Add immediate
+                    VARIABLE_REGISTERS[(byte)secondNibble] += instrByteTwo;
                     break;
-                case 0x8:
+                case 0x8: //Arithmetic or Logical instructions
+                    switch (fourthNibble)
+                    {
+                        case 0x0: //8XY0 - Set register
+                            VARIABLE_REGISTERS[(byte)secondNibble] = VARIABLE_REGISTERS[(byte)thirdNibble];
+                            break;
+                        case 0x1: //8XY1 - Logical OR register
+                            VARIABLE_REGISTERS[(byte)secondNibble] = (byte)(VARIABLE_REGISTERS[(byte)secondNibble] | VARIABLE_REGISTERS[(byte)thirdNibble]);
+                            break;
+                        case 0x2: //8XY2 - Logical AND register
+                            VARIABLE_REGISTERS[(byte)secondNibble] = (byte)(VARIABLE_REGISTERS[(byte)secondNibble] & VARIABLE_REGISTERS[(byte)thirdNibble]);
+                            break;
+                        case 0x3: //8XY3 - Logical XOR register
+                            VARIABLE_REGISTERS[(byte)secondNibble] = (byte)(VARIABLE_REGISTERS[(byte)secondNibble] ^ VARIABLE_REGISTERS[(byte)thirdNibble]);
+                            break;
+                        case 0x4: //8XY4 - Add register
+                            int product = VARIABLE_REGISTERS[(byte)secondNibble] + VARIABLE_REGISTERS[(byte)thirdNibble];
+                            VARIABLE_REGISTERS[(byte)secondNibble] = (byte)product;
+                            if (product > 255)
+                            {
+                                VARIABLE_REGISTERS[0xF] = 1;
+                            }
+                            else
+                            {
+                                VARIABLE_REGISTERS[0xF] = 0;
+                            }
+                            break;
+                        case 0x5: //8XY5 - Subtract register X-Y
+                            var minuend5 = VARIABLE_REGISTERS[(byte)secondNibble];
+                            var subtrahend5 = VARIABLE_REGISTERS[(byte)thirdNibble];
+                            VARIABLE_REGISTERS[(byte)secondNibble] = (byte)(minuend5 - subtrahend5);
+                            if (minuend5 > subtrahend5)
+                            {
+                                VARIABLE_REGISTERS[0xF] = 1;
+                            }
+                            else
+                            {
+                                VARIABLE_REGISTERS[0xF] = 0;
+                            }
+                            break;
+                        case 0x6: //8XY6 - Shift right register
+                            var leastSignifigant = (byte)(VARIABLE_REGISTERS[(byte)secondNibble] & 1);
+                            VARIABLE_REGISTERS[(byte)secondNibble] = (byte)(VARIABLE_REGISTERS[(byte)secondNibble] >> 1);
+                            VARIABLE_REGISTERS[0xF] = leastSignifigant;
+                            break;
+                        case 0x7: //8XY7 - Subtract register Y-X
+                            var minuend7 = VARIABLE_REGISTERS[(byte)thirdNibble];
+                            var subtrahend7 = VARIABLE_REGISTERS[(byte)secondNibble];
+                            VARIABLE_REGISTERS[(byte)secondNibble] = (byte)(minuend7 - subtrahend7);
+                            if (minuend7 > subtrahend7)
+                            {
+                                VARIABLE_REGISTERS[0xF] = 1;
+                            }
+                            else
+                            {
+                                VARIABLE_REGISTERS[0xF] = 0;
+                            }
+                            break;
+                        case 0xE: //8XYE - Shift left register
+                            var mostSignifigant = (byte)((VARIABLE_REGISTERS[(byte)secondNibble] >> 7) & 1);
+                            VARIABLE_REGISTERS[(byte)secondNibble] = (byte)(VARIABLE_REGISTERS[(byte)secondNibble] << 1);
+                            VARIABLE_REGISTERS[0xF] = mostSignifigant;
+                            break;
+
+                    }
                     break;
-                case 0x9:
+                case 0x9: //9XY0 - Skip if not equal registers
+                    if (VARIABLE_REGISTERS[(byte)secondNibble] != VARIABLE_REGISTERS[(byte)thirdNibble])
+                    {
+                        PC += 2;
+                    }
                     break;
-                case 0xA:
+                case 0xA: //ANNN - Set index
+                    INDEX_REGISTER = (ushort)nibbleNNN;
                     break;
-                case 0xB:
+                case 0xB: //BNNN or BXNN - Jump with offset
+                    if (_superChipQuirk)
+                    {
+                        PC = (ushort)(nibbleNNN + VARIABLE_REGISTERS[(byte)secondNibble]);
+                    }
+                    else
+                    {
+                        PC = (ushort)(nibbleNNN + VARIABLE_REGISTERS[0x0]);
+                    }
                     break;
-                case 0xC:
+                case 0xC: //CXNN - Random
+                    var randArray = new byte[1];
+                    random.NextBytes(randArray);
+                    VARIABLE_REGISTERS[(byte)secondNibble] = (byte)(randArray[0] & instrByteTwo);
                     break;
-                case 0xD:
+                case 0xD: //DXYN - Display
+                    byte xcoord = (byte)(VARIABLE_REGISTERS[(byte)secondNibble] % _screen.getWidth());
+                    byte ycoord = (byte)(VARIABLE_REGISTERS[(byte)thirdNibble] % _screen.getHeight());
+                    VARIABLE_REGISTERS[0xF] = 0;
+                    for (int i = 0; i < fourthNibble; i++)
+                    {
+                        byte spriteRow = RAM[INDEX_REGISTER + i];
+                        byte countingXcoord = xcoord;
+                        var spriteRowArray = new BitArray(new byte[] { spriteRow });
+                        for (int j = 8; j > 0; j--)
+                        {
+                            bool bit = spriteRowArray[j - 1];
+                            if (_screen.XORPixel(bit, countingXcoord, ycoord))
+                            {
+                                VARIABLE_REGISTERS[0xF] = 1;
+                            }
+
+                            countingXcoord++;
+
+                            if (countingXcoord == _screen.getWidth())
+                            {
+                                countingXcoord = xcoord;
+                                break;
+                            }
+                        }
+                        ycoord++;
+                        if (ycoord == _screen.getHeight())
+                        {
+                            break;
+                        }
+                    }
                     break;
-                case 0xE:
+                case 0xE: //Skip if key instructions
+                    switch (instrByteTwo)
+                    {
+                        case 0x9E: //EX9E - skip if pressed
+                            if (PRESSED_KEYS[VARIABLE_REGISTERS[(byte)secondNibble]])
+                            {
+                                PC += 2;
+                            }
+                            break;
+                        case 0xA1: //EXA1 - skip if not pressed
+                            if (!PRESSED_KEYS[VARIABLE_REGISTERS[(byte)secondNibble]])
+                            {
+                                PC += 2;
+                            }
+                            break;
+                    }
                     break;
                 case 0xF:
+                    switch (instrByteTwo)
+                    {
+                        case 0x07: //FX07 - Set register to delay timer
+                            VARIABLE_REGISTERS[(byte)secondNibble] = DELAY_TIMER;
+                            break;
+                        case 0x15: //FX15 - Set delay timer to register
+                            _ = setDelayTimer(VARIABLE_REGISTERS[(byte)secondNibble]);
+                            break;
+                        case 0x18: //FX18 - Set sound timer to register
+                            _ = setSoundTimer(VARIABLE_REGISTERS[(byte)secondNibble]);
+                            break;
+                        case 0x1E: //FX1E - Add to index
+                            INDEX_REGISTER += VARIABLE_REGISTERS[(byte)secondNibble];
+                            break;
+                        case 0x0A: //FX0A - Get key
+                            PC -= 2;
+                            foreach(var keypair in PRESSED_KEYS)
+                            {
+                                if(keypair.Value == true)
+                                {
+                                    PC += 2;
+                                    VARIABLE_REGISTERS[(byte)secondNibble] = keypair.Key;
+                                    break;
+                                }
+                            }
+                            break;
+                        case 0x29: //FX29 - Font character
+                            var lastVXNibble = VARIABLE_REGISTERS[(byte)secondNibble] & 0x0F;
+                            INDEX_REGISTER = (ushort)(0x050 + (5*lastVXNibble));
+                            break;
+                        case 0x33: //FX33 - Binary-coded decimal conversion
+                            var toConvert = VARIABLE_REGISTERS[(byte)secondNibble];
+                            if(toConvert == 0)
+                            {
+                                RAM[INDEX_REGISTER] = 0;
+                                break;
+                            }
+                            var digits = new byte[3];
+                            int index = 2;
+                            while(toConvert > 0)
+                            {
+                                var digit = toConvert % 10;
+                                toConvert /= 10;
+                                digits[index--] = (byte)digit;
+                            }
+                            for(int i = 0; i < digits.Length; i++)
+                            {
+                                RAM[INDEX_REGISTER+i] = digits[i];
+                            }
+                            break;
+                        case 0x55: //FX55 - Store registers to memory
+                            for(byte i = 0; i < secondNibble+1; i++)
+                            {
+                                RAM[INDEX_REGISTER+i] = VARIABLE_REGISTERS[i];
+                            }
+                            break;
+                        case 0x65: //5X65 - Load registers from memory
+                            for(byte i = 0; i < secondNibble+1; i++)
+                            {
+                                VARIABLE_REGISTERS[i] = RAM[INDEX_REGISTER+i];
+                            }
+                            break;
+                    }
                     break;
             }
-
-            //Decode
-
-            //Execute
+            Thread.Sleep(1);
         }
 
     }

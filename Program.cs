@@ -32,10 +32,10 @@ class Program
         }
 
         var running = true;
-        var cpuLoop = Task.Run(() => cpu.Loop());
+        _ = Task.Run(() => cpu.Tick());
         while (running)
         {
-
+            // cpu.Tick();
             // Check to see if there are any events and continue to do so until the queue is empty.
             while (SDL.SDL_PollEvent(out SDL.SDL_Event e) == 1)
             {
@@ -218,6 +218,5 @@ class Program
         SDL.SDL_DestroyRenderer(_renderer);
         SDL.SDL_DestroyWindow(_window);
         SDL.SDL_Quit();
-        cpuLoop.Dispose();
     }
 }

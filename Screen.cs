@@ -70,12 +70,18 @@ public class Screen
         needDraw = true;
     }
 
-    public void XORPixel(bool value, byte x, byte y)
+    public bool XORPixel(bool value, byte x, byte y)
     {
         if (value)
         {
             pixelsToDraw[x, y] = !pixelsToDraw[x, y];
+            needDraw = true;
+            if(!pixelsToDraw[x, y])
+            {
+                return true;
+            }
         }
+        return false;
     }
 
 }
