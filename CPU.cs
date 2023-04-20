@@ -14,7 +14,7 @@ public class CPU
     public Dictionary<byte, byte> VARIABLE_REGISTERS;
     public Dictionary<byte, bool> PRESSED_KEYS;
     private Screen _screen;
-    private bool _superChipQuirk;
+    private bool _superChip;
     private Random random;
 
     private byte[] _font = new byte[]
@@ -37,9 +37,29 @@ public class CPU
         0xF0, 0x80, 0xF0, 0x80, 0x80  // F
     };
 
+    private byte[] _largeFont = new byte[]
+    {
+        0xFF, 0xFF, 0xC3, 0xC3, 0xC3, 0xC3, 0xC3, 0xC3, 0xFF, 0xFF, // 0
+		0x18, 0x78, 0x78, 0x18, 0x18, 0x18, 0x18, 0x18, 0xFF, 0xFF, // 1
+		0xFF, 0xFF, 0x03, 0x03, 0xFF, 0xFF, 0xC0, 0xC0, 0xFF, 0xFF, // 2
+		0xFF, 0xFF, 0x03, 0x03, 0xFF, 0xFF, 0x03, 0x03, 0xFF, 0xFF, // 3
+		0xC3, 0xC3, 0xC3, 0xC3, 0xFF, 0xFF, 0x03, 0x03, 0x03, 0x03, // 4
+		0xFF, 0xFF, 0xC0, 0xC0, 0xFF, 0xFF, 0x03, 0x03, 0xFF, 0xFF, // 5
+		0xFF, 0xFF, 0xC0, 0xC0, 0xFF, 0xFF, 0xC3, 0xC3, 0xFF, 0xFF, // 6
+		0xFF, 0xFF, 0x03, 0x03, 0x06, 0x0C, 0x18, 0x18, 0x18, 0x18, // 7
+		0xFF, 0xFF, 0xC3, 0xC3, 0xFF, 0xFF, 0xC3, 0xC3, 0xFF, 0xFF, // 8
+		0xFF, 0xFF, 0xC3, 0xC3, 0xFF, 0xFF, 0x03, 0x03, 0xFF, 0xFF, // 9
+		0x7E, 0xFF, 0xC3, 0xC3, 0xC3, 0xFF, 0xFF, 0xC3, 0xC3, 0xC3, // A
+		0xFC, 0xFC, 0xC3, 0xC3, 0xFC, 0xFC, 0xC3, 0xC3, 0xFC, 0xFC, // B
+		0x3C, 0xFF, 0xC3, 0xC0, 0xC0, 0xC0, 0xC0, 0xC3, 0xFF, 0x3C, // C
+		0xFC, 0xFE, 0xC3, 0xC3, 0xC3, 0xC3, 0xC3, 0xC3, 0xFE, 0xFC, // D
+		0xFF, 0xFF, 0xC0, 0xC0, 0xFF, 0xFF, 0xC0, 0xC0, 0xFF, 0xFF, // E
+		0xFF, 0xFF, 0xC0, 0xC0, 0xFF, 0xFF, 0xC0, 0xC0, 0xC0, 0xC0  // F
+    };
+
     public CPU(byte[] rom, Screen screen, bool superChip = false)
     {
-        _superChipQuirk = superChip;
+        _superChip = superChip;
         random = new();
         RAM = new Byte[4096];
         STACK = new();
@@ -93,6 +113,10 @@ public class CPU
         {
             RAM[fontLoadAddr++] = fontByte;
         }
+        foreach(byte bigFontByte in _largeFont)
+        {
+            RAM[fontLoadAddr++] = bigFontByte;
+        }
 
         int romLoadAddr = 0x200;
         foreach (byte romByte in rom)
@@ -121,13 +145,31 @@ public class CPU
             switch (firstNibble)
             {
                 case 0x0:
-                    switch (fourthNibble)
+                    switch (instrByteTwo)
                     {
-                        case 0x0: //00E0 - Clear screen
+                        case 0xE0: //00E0 - Clear screen
                             _screen.ClearScreen();
                             break;
-                        case 0xE: //00EE - Subroutine return
+                        case 0xEE: //00EE - Subroutine return
                             PC = STACK.Pop();
+                            break;
+                        case 0xFF: //00FF - enable hires
+                            _screen.EnableHiRes();
+                            break;
+                        case 0xFE: //00FE - disable hires
+                            _screen.EnableLowRes();
+                            break;
+                        case 0xFB: //00FB - scroll right
+                            _screen.ScrollRight();
+                            break;
+                        case 0xFC: //00FC - scroll left
+                            _screen.ScrollLeft();
+                            break;
+                        default:
+                            if (thirdNibble == 0xC) //00CN - Scroll down
+                            {
+                                _screen.ScrollDown(fourthNibble);
+                            }
                             break;
                     }
                     break;
@@ -238,7 +280,7 @@ public class CPU
                     INDEX_REGISTER = (ushort)nibbleNNN;
                     break;
                 case 0xB: //BNNN or BXNN - Jump with offset
-                    if (_superChipQuirk)
+                    if (_superChip)
                     {
                         PC = (ushort)(nibbleNNN + VARIABLE_REGISTERS[(byte)secondNibble]);
                     }
@@ -252,37 +294,74 @@ public class CPU
                     random.NextBytes(randArray);
                     VARIABLE_REGISTERS[(byte)secondNibble] = (byte)(randArray[0] & instrByteTwo);
                     break;
-                case 0xD: //DXYN - Display
+                case 0xD: //Display instructions
                     byte xcoord = (byte)(VARIABLE_REGISTERS[(byte)secondNibble] % _screen.getWidth());
                     byte ycoord = (byte)(VARIABLE_REGISTERS[(byte)thirdNibble] % _screen.getHeight());
                     VARIABLE_REGISTERS[0xF] = 0;
-                    for (int i = 0; i < fourthNibble; i++)
+                    if (fourthNibble == 0) //DXY0 Display a 16x16 sprite
                     {
-                        byte spriteRow = RAM[INDEX_REGISTER + i];
-                        byte countingXcoord = xcoord;
-                        var spriteRowArray = new BitArray(new byte[] { spriteRow });
-                        for (int j = 8; j > 0; j--)
+                        int rowIndex = 0;
+                        for (int i = 0; i < 16; i++)
                         {
-                            bool bit = spriteRowArray[j - 1];
-                            if (_screen.XORPixel(bit, countingXcoord, ycoord))
+                            byte spriteRowLeft = RAM[INDEX_REGISTER + rowIndex++];
+                            byte spriteRowRight = RAM[INDEX_REGISTER + rowIndex++];
+                            byte countingXcoord = xcoord;
+                            var spriteRowArray = new BitArray(new byte[] { spriteRowRight, spriteRowLeft });
+                            for (int j = 16; j > 0; j--)
                             {
-                                VARIABLE_REGISTERS[0xF] = 1;
+                                bool bit = spriteRowArray[j - 1];
+
+                                if (_screen.XORPixel(bit, countingXcoord, ycoord))
+                                {
+                                    VARIABLE_REGISTERS[0xF] = 1;
+                                }
+
+                                countingXcoord++;
+
+                                if (countingXcoord == _screen.getWidth())
+                                {
+                                    countingXcoord = xcoord;
+                                    break;
+                                }
                             }
-
-                            countingXcoord++;
-
-                            if (countingXcoord == _screen.getWidth())
+                            ycoord++;
+                            if (ycoord == _screen.getHeight())
                             {
-                                countingXcoord = xcoord;
                                 break;
                             }
                         }
-                        ycoord++;
-                        if (ycoord == _screen.getHeight())
+                    }
+                    else //DXYN - Display
+                    {
+                        for (int i = 0; i < fourthNibble; i++)
                         {
-                            break;
+                            byte spriteRow = RAM[INDEX_REGISTER + i];
+                            byte countingXcoord = xcoord;
+                            var spriteRowArray = new BitArray(new byte[] { spriteRow });
+                            for (int j = 8; j > 0; j--)
+                            {
+                                bool bit = spriteRowArray[j - 1];
+                                if (_screen.XORPixel(bit, countingXcoord, ycoord))
+                                {
+                                    VARIABLE_REGISTERS[0xF] = 1;
+                                }
+
+                                countingXcoord++;
+
+                                if (countingXcoord == _screen.getWidth())
+                                {
+                                    countingXcoord = xcoord;
+                                    break;
+                                }
+                            }
+                            ycoord++;
+                            if (ycoord == _screen.getHeight())
+                            {
+                                break;
+                            }
                         }
                     }
+
                     break;
                 case 0xE: //Skip if key instructions
                     switch (instrByteTwo)
@@ -318,9 +397,9 @@ public class CPU
                             break;
                         case 0x0A: //FX0A - Get key
                             PC -= 2;
-                            foreach(var keypair in PRESSED_KEYS)
+                            foreach (var keypair in PRESSED_KEYS)
                             {
-                                if(keypair.Value == true)
+                                if (keypair.Value == true)
                                 {
                                     PC += 2;
                                     VARIABLE_REGISTERS[(byte)secondNibble] = keypair.Key;
@@ -330,39 +409,66 @@ public class CPU
                             break;
                         case 0x29: //FX29 - Font character
                             var lastVXNibble = VARIABLE_REGISTERS[(byte)secondNibble] & 0x0F;
-                            INDEX_REGISTER = (ushort)(0x050 + (5*lastVXNibble));
+                            INDEX_REGISTER = (ushort)(0x050 + (5 * lastVXNibble));
+                            break;
+                        case 0x30: //FX30 - Large font character
+                            var lastVXNibbleLarge = VARIABLE_REGISTERS[(byte)secondNibble] & 0x0F;
+                            INDEX_REGISTER = (ushort)(0x0A0 + (10 * lastVXNibbleLarge));
                             break;
                         case 0x33: //FX33 - Binary-coded decimal conversion
                             var toConvert = VARIABLE_REGISTERS[(byte)secondNibble];
-                            if(toConvert == 0)
+                            if (toConvert == 0)
                             {
                                 RAM[INDEX_REGISTER] = 0;
                                 break;
                             }
                             var digits = new byte[3];
                             int index = 2;
-                            while(toConvert > 0)
+                            while (toConvert > 0)
                             {
                                 var digit = toConvert % 10;
                                 toConvert /= 10;
                                 digits[index--] = (byte)digit;
                             }
-                            for(int i = 0; i < digits.Length; i++)
+                            for (int i = 0; i < digits.Length; i++)
                             {
-                                RAM[INDEX_REGISTER+i] = digits[i];
+                                RAM[INDEX_REGISTER + i] = digits[i];
                             }
                             break;
                         case 0x55: //FX55 - Store registers to memory
-                            for(byte i = 0; i < secondNibble+1; i++)
+                            if (_superChip)
                             {
-                                RAM[INDEX_REGISTER+i] = VARIABLE_REGISTERS[i];
+                                for (byte i = 0; i < secondNibble + 1; i++)
+                                {
+                                    RAM[INDEX_REGISTER + i] = VARIABLE_REGISTERS[i];
+                                }
                             }
+                            else
+                            {
+                                for (byte i = 0; i < secondNibble + 1; i++)
+                                {
+
+                                    RAM[INDEX_REGISTER++] = VARIABLE_REGISTERS[i];
+                                }
+                            }
+
                             break;
                         case 0x65: //5X65 - Load registers from memory
-                            for(byte i = 0; i < secondNibble+1; i++)
+                            if (_superChip)
                             {
-                                VARIABLE_REGISTERS[i] = RAM[INDEX_REGISTER+i];
+                                for (byte i = 0; i < secondNibble + 1; i++)
+                                {
+                                    VARIABLE_REGISTERS[i] = RAM[INDEX_REGISTER + i];
+                                }
                             }
+                            else
+                            {
+                                for (byte i = 0; i < secondNibble + 1; i++)
+                                {
+                                    VARIABLE_REGISTERS[i] = RAM[INDEX_REGISTER++];
+                                }
+                            }
+
                             break;
                     }
                     break;
